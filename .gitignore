@@ -1,10 +1,29 @@
 *.swp
+*.log
 package-lock.json
+
 __pycache__
+*.py[cod]
 .pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.python-version
 .venv
 *.egg-info
+build
+dist
 
-# CDK asset staging directory
+.env
+.env.*
+
+# CDK output / context
 .cdk.staging
 cdk.out
+cdk.context.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode

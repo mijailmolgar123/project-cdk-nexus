@@ -1,58 +1,142 @@
+# CDK Nexus (AWS CDK v2 - Python)
 
-# Welcome to your CDK Python project!
+Infraestructura para una app web existente que se despliega por GitHub Actions a una EC2.
+Este repo SOLO crea infraestructura (sin app ni Nginx), free-tier friendly y replicable.
 
-This is a blank project for CDK development with Python.
+## Resumen de arquitectura
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+- NetworkStack
+  - VPC con CIDR configurable
+  - Subnets publicas + privadas aisladas (sin NAT Gateway)
+  - Security Groups:
+    - EC2 SG: HTTP 80 abierto, HTTPS 443 opcional, SSH 22 solo desde `ssh_cidr`
+    - RDS SG: solo 5432 desde el SG de la EC2
 
-This project is set up like a standard Python project.  The initialization
-process also creates a virtualenv within this project, stored under the `.venv`
-directory.  To create the virtualenv it assumes that there is a `python3`
-(or `python` for Windows) executable in your path with access to the `venv`
-package. If for any reason the automatic creation of the virtualenv fails,
-you can create the virtualenv manually.
+- DatabaseStack
+  - RDS PostgreSQL (clase configurable, por defecto free-tier friendly `t4g.micro`)
+  - Credenciales generadas en AWS Secrets Manager
+  - Endpoint y nombre del secreto como outputs
 
-To manually create a virtualenv on MacOS and Linux:
+- ComputeStack
+  - EC2 t3.micro/t2.micro (configurable) en subnets publicas
+  - Rol IAM para leer el secreto de RDS (por defecto)
+  - Outputs: InstanceId, PublicIp, PublicDns
+
+## Principios clave
+
+- No hay NAT Gateway (costo) -> EC2 en subnets publicas.
+- RDS en subnets privadas aisladas (no public).
+- Secretos NO hardcodeados: credenciales en Secrets Manager.
+- Tags: `project` y `env`.
+- Nombres con prefijo `project-env` para idempotencia y claridad.
+- Soporte multi-entorno via `context` (`env_name`).
+- Single-AZ por defecto (`max_azs: 1`).
+
+## Requisitos
+
+- Python 3.10+ recomendado
+- AWS CDK v2 (CLI instalado)
+- Credenciales AWS validas (AWS_PROFILE o variables)
+
+## Configuracion por contexto (cdk.json)
+
+Los valores se leen desde `cdk.json` (o `-c` por CLI). Ejemplo relevante:
 
 ```
-$ python -m venv .venv
+"context": {
+  "project": "segurimax",
+  "env_name": "dev",
+  "environments": {
+    "dev": {
+      "account": "123456789012",
+      "region": "us-east-2",
+      "vpc_cidr": "10.0.0.0/16",
+      "max_azs": 1,
+      "instance_type": "t3.micro",
+      "allow_https": false,
+      "ssh_cidr": "203.0.113.10/32",
+      "ssh_key_name": "mi-keypair",
+      "db_name": "appdb",
+      "db_username": "appuser",
+      "db_instance_class": "t4g.micro"
+    }
+  }
+}
 ```
 
-After the init process completes and the virtualenv is created, you can use the following
-step to activate your virtualenv.
+Notas:
+- `ssh_key_name` es el nombre del Key Pair existente en EC2. Si esta vacio, no se asigna key.
+- `ssh_cidr` debe ser tu IP publica en formato CIDR.
+- `account` y `region` pueden venir del perfil AWS si no se setean aqui.
 
-```
-$ source .venv/bin/activate
-```
+## Flujo recomendado (desde cero)
 
-If you are a Windows platform, you would activate the virtualenv like this:
-
+1) Crear entorno virtual e instalar dependencias
 ```
-% .venv\Scripts\activate.bat
-```
-
-Once the virtualenv is activated, you can install the required dependencies.
-
-```
-$ pip install -r requirements.txt
+python -m venv .venv
+pip install -r requirements.txt
 ```
 
-At this point you can now synthesize the CloudFormation template for this code.
+2) Configurar contexto en `cdk.json` (o por CLI)
+
+3) (Opcional pero recomendado) Bootstrap de CDK en la cuenta/region
+```
+cdk bootstrap aws://<ACCOUNT_ID>/<REGION>
+```
+
+4) Synth/diff/deploy
+```
+cdk synth -c env_name=dev
+cdk diff -c env_name=dev
+cdk deploy -c env_name=dev
+```
+
+## SSH a la EC2
+
+Para poder entrar por SSH:
+- Crea un Key Pair en EC2 y descarga el `.pem`.
+- Pon el nombre en `ssh_key_name`.
+- Asegura que `ssh_cidr` incluya tu IP publica.
+
+Ejemplo de conexion:
+```
+ssh -i mi-keypair.pem ec2-user@<PublicIp>
+```
+
+## Secreto de RDS (Secrets Manager)
+
+El secreto se genera automaticamente con:
+- `username` (definido en context)
+- `password` generado
+
+La EC2 tiene permisos IAM para leerlo. Ejemplo desde la instancia:
+```
+aws secretsmanager get-secret-value --secret-id <project-env>/rds/<db_name>
+```
+
+## Notas sobre CDK CLI
+
+- `cdk diff` compara lo desplegado vs lo que se va a desplegar.
+- El aviso de "lookup-role" indica que no pudo asumir el rol de bootstrap; si falla en deploy, ejecuta `cdk bootstrap`.
+- El mensaje de "feature flags" y telemetria es informativo. Se puede ocultar con:
+  - `cdk flags --unstable=flags`
+  - `cdk acknowledge 34892`
+
+## Ajustes comunes
+
+- Single-AZ: `max_azs: 1` (por defecto en dev/prod).
+- HTTPS: `allow_https: true`.
+- RDS retention: `db_deletion_protection: true` en prod.
+- RDS clase: `db_instance_class` (free-tier friendly recomendado: `t4g.micro`).
+
+## Estructura del proyecto
 
 ```
-$ cdk synth
+app.py
+cdk.json
+requirements.txt
+stacks/
+  network_stack.py
+  database_stack.py
+  compute_stack.py
 ```
-
-To add additional dependencies, for example other CDK libraries, just add
-them to your `requirements.txt` file and rerun the `python -m pip install -r requirements.txt`
-command.
-
-## Useful commands
-
- * `cdk ls`          list all stacks in the app
- * `cdk synth`       emits the synthesized CloudFormation template
- * `cdk deploy`      deploy this stack to your default AWS account/region
- * `cdk diff`        compare deployed stack with current state
- * `cdk docs`        open CDK documentation
-
-Enjoy!
