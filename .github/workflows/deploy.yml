@@ -1,0 +1,330 @@
+name: Deploy Infrastructure
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      env_name:
+        description: CDK environment name
+        required: false
+        default: dev
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      CDK_ENV_NAME: ${{ inputs.env_name || vars.CDK_ENV_NAME || 'dev' }}
+      PROJECT_NAME: ${{ vars.PROJECT_NAME || 'segurimax' }}
+      APP_GIT_REPO_SSH_URL: ${{ vars.APP_GIT_REPO_SSH_URL || '' }}
+      APP_GIT_BRANCH: ${{ vars.APP_GIT_BRANCH || 'main' }}
+      APP_DIRECTORY: ${{ vars.APP_DIRECTORY || '/home/ec2-user/app' }}
+      APP_SERVICE_NAME: ${{ vars.APP_SERVICE_NAME || 'myapp' }}
+      APP_FLASK_APP: ${{ vars.APP_FLASK_APP || 'app:create_app' }}
+      APP_ENV_FILE_PATH: ${{ vars.APP_ENV_FILE_PATH || '/etc/myapp.env' }}
+      APP_CONFIG_PARAMETER_PREFIX: ${{ vars.APP_CONFIG_PARAMETER_PREFIX || '' }}
+      APP_DEPLOY_KEY_PARAMETER_NAME: ${{ vars.APP_DEPLOY_KEY_PARAMETER_NAME || '' }}
+      APP_SYSTEM_PACKAGES: ${{ vars.APP_SYSTEM_PACKAGES || 'git python3.11 python3.11-pip pango gdk-pixbuf2 cairo fontconfig libffi' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.11"
+
+      - name: Load environment defaults from cdk.json
+        run: |
+          python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          import os
+
+          env_name = os.environ["CDK_ENV_NAME"]
+          with open("cdk.json", "r", encoding="utf-8") as fh:
+              config = json.load(fh)
+
+          env_cfg = config.get("context", {}).get("environments", {}).get(env_name, {})
+          defaults = {
+              "AWS_REGION": env_cfg.get("region", ""),
+              "APP_DEPLOY_KEY_PARAMETER_NAME": env_cfg.get("app_deploy_key_parameter_name", ""),
+              "APP_CONFIG_PARAMETER_PREFIX": env_cfg.get("app_config_parameter_prefix", ""),
+              "APP_DIRECTORY": env_cfg.get("app_directory", ""),
+              "APP_SERVICE_NAME": env_cfg.get("app_service_name", ""),
+              "APP_FLASK_APP": env_cfg.get("app_flask_app", ""),
+              "APP_ENV_FILE_PATH": env_cfg.get("app_env_file_path", ""),
+          }
+
+          for env_var, value in defaults.items():
+              if value and not os.environ.get(env_var):
+                  print(f"{env_var}={value}")
+          PY
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          npm install
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+      - name: CDK synth
+        run: npx cdk synth -c env_name=${CDK_ENV_NAME}
+
+      - name: CDK deploy
+        run: npx cdk deploy --all --require-approval never -c env_name=${CDK_ENV_NAME}
+
+      - name: Resolve stack outputs
+        if: ${{ (env.APP_DEPLOY_KEY_PARAMETER_NAME != '' && env.APP_GIT_REPO_SSH_URL != '') || secrets.ERP_DEPLOY_COMMANDS_B64 != '' }}
+        run: |
+          COMPUTE_STACK_NAME="${PROJECT_NAME}-${CDK_ENV_NAME}-compute"
+          DATABASE_STACK_NAME="${PROJECT_NAME}-${CDK_ENV_NAME}-database"
+
+          INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$COMPUTE_STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='InstanceId'].OutputValue | [0]" \
+            --output text)
+          DB_INSTANCE_IDENTIFIER=$(aws cloudformation describe-stacks \
+            --stack-name "$DATABASE_STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='DbInstanceIdentifier'].OutputValue | [0]" \
+            --output text)
+
+          echo "INSTANCE_ID=$INSTANCE_ID" >> "$GITHUB_ENV"
+          echo "DB_INSTANCE_IDENTIFIER=$DB_INSTANCE_IDENTIFIER" >> "$GITHUB_ENV"
+
+          if [ -z "${APP_CONFIG_PARAMETER_PREFIX}" ]; then
+            APP_CONFIG_PARAMETER_PREFIX=$(aws cloudformation describe-stacks \
+              --stack-name "$DATABASE_STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='AppConfigParameterPrefix'].OutputValue | [0]" \
+              --output text)
+            echo "APP_CONFIG_PARAMETER_PREFIX=$APP_CONFIG_PARAMETER_PREFIX" >> "$GITHUB_ENV"
+          fi
+
+      - name: Ensure EC2 and RDS are online
+        if: ${{ env.INSTANCE_ID != '' && env.DB_INSTANCE_IDENTIFIER != '' }}
+        run: |
+          EC2_STATE=$(aws ec2 describe-instances \
+            --instance-ids "$INSTANCE_ID" \
+            --query "Reservations[0].Instances[0].State.Name" \
+            --output text)
+
+          if [ "$EC2_STATE" = "stopping" ]; then
+            aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID"
+            EC2_STATE="stopped"
+          fi
+
+          if [ "$EC2_STATE" = "stopped" ]; then
+            aws ec2 start-instances --instance-ids "$INSTANCE_ID" >/dev/null
+          fi
+
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+
+          DB_STATUS=$(aws rds describe-db-instances \
+            --db-instance-identifier "$DB_INSTANCE_IDENTIFIER" \
+            --query "DBInstances[0].DBInstanceStatus" \
+            --output text)
+
+          if [ "$DB_STATUS" = "stopped" ]; then
+            aws rds start-db-instance --db-instance-identifier "$DB_INSTANCE_IDENTIFIER" >/dev/null
+          fi
+
+          for attempt in $(seq 1 60); do
+            DB_STATUS=$(aws rds describe-db-instances \
+              --db-instance-identifier "$DB_INSTANCE_IDENTIFIER" \
+              --query "DBInstances[0].DBInstanceStatus" \
+              --output text)
+
+            if [ "$DB_STATUS" = "available" ]; then
+              break
+            fi
+
+            sleep 20
+          done
+
+          if [ "$DB_STATUS" != "available" ]; then
+            echo "RDS instance $DB_INSTANCE_IDENTIFIER did not become available."
+            exit 1
+          fi
+
+          SSM_STATUS="Offline"
+          for attempt in $(seq 1 30); do
+            SSM_STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+              --query "InstanceInformationList[0].PingStatus" \
+              --output text 2>/dev/null || true)
+
+            if [ "$SSM_STATUS" = "Online" ]; then
+              break
+            fi
+
+            sleep 10
+          done
+
+          if [ "$SSM_STATUS" != "Online" ]; then
+            echo "Instance $INSTANCE_ID did not become available in SSM."
+            exit 1
+          fi
+
+      - name: Deploy application from GitHub via SSM Parameter Store
+        if: ${{ env.INSTANCE_ID != '' && env.APP_DEPLOY_KEY_PARAMETER_NAME != '' && env.APP_GIT_REPO_SSH_URL != '' }}
+        run: |
+          python - <<'PY' > commands.json
+          import json
+          import os
+          import shlex
+
+          repo = os.environ["APP_GIT_REPO_SSH_URL"]
+          branch = os.environ["APP_GIT_BRANCH"]
+          app_dir = os.environ["APP_DIRECTORY"]
+          service = os.environ["APP_SERVICE_NAME"]
+          flask_app = os.environ["APP_FLASK_APP"]
+          env_file = os.environ["APP_ENV_FILE_PATH"]
+          parameter = os.environ["APP_DEPLOY_KEY_PARAMETER_NAME"]
+          config_prefix = os.environ["APP_CONFIG_PARAMETER_PREFIX"].rstrip("/")
+          packages = os.environ.get("APP_SYSTEM_PACKAGES", "").strip()
+
+          git_ssh = "ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          quoted_packages = " ".join(shlex.quote(pkg) for pkg in packages.split())
+
+          def param_name(key: str) -> str:
+              return f"{config_prefix}/{key}"
+
+          commands = [
+              "set -euo pipefail",
+              "mkdir -p ~/.ssh",
+              "touch ~/.ssh/known_hosts",
+              "chmod 700 ~/.ssh",
+              "ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || true",
+              f"aws ssm get-parameter --name {shlex.quote(parameter)} --with-decryption --query Parameter.Value --output text > ~/.ssh/deploy_key",
+              "chmod 600 ~/.ssh/deploy_key",
+          ]
+
+          if quoted_packages:
+              commands.append(
+                  "MISSING_PACKAGES=\"\"; "
+                  f"for pkg in {quoted_packages}; do "
+                  "if ! rpm -q \"$pkg\" >/dev/null 2>&1; then "
+                  "MISSING_PACKAGES=\"$MISSING_PACKAGES $pkg\"; "
+                  "fi; "
+                  "done; "
+                  "if [ -n \"$MISSING_PACKAGES\" ]; then "
+                  "if command -v dnf >/dev/null 2>&1; then "
+                  "sudo dnf install -y $MISSING_PACKAGES; "
+                  "else "
+                  "sudo yum install -y $MISSING_PACKAGES; "
+                  "fi; "
+                  "fi"
+              )
+
+          commands.extend(
+              [
+                  f"mkdir -p {shlex.quote(app_dir)}",
+                  f"cd {shlex.quote(app_dir)}",
+                  "if [ ! -d .git ]; then "
+                  f"GIT_SSH_COMMAND={shlex.quote(git_ssh)} git clone --branch {shlex.quote(branch)} {shlex.quote(repo)} .; "
+                  "else "
+                  f"git remote set-url origin {shlex.quote(repo)}; "
+                  f"GIT_SSH_COMMAND={shlex.quote(git_ssh)} git fetch origin {shlex.quote(branch)}; "
+                  f"GIT_SSH_COMMAND={shlex.quote(git_ssh)} git checkout {shlex.quote(branch)}; "
+                  f"GIT_SSH_COMMAND={shlex.quote(git_ssh)} git pull --ff-only origin {shlex.quote(branch)}; "
+                  "fi",
+                  "if [ ! -d venv ]; then python3.11 -m venv venv; fi",
+                  "venv/bin/pip install --upgrade pip",
+                  "venv/bin/pip install -r requirements.txt gunicorn",
+                  "fetch_param() { aws ssm get-parameter --name \"$1\" --with-decryption --query Parameter.Value --output text; }",
+                  "printf '%s\\n' "
+                  + " ".join(
+                      [
+                          f"\"USE_AWS_SECRET=$(fetch_param {shlex.quote(param_name('USE_AWS_SECRET'))})\"",
+                          f"\"DB_HOST=$(fetch_param {shlex.quote(param_name('DB_HOST'))})\"",
+                          f"\"DB_PORT=$(fetch_param {shlex.quote(param_name('DB_PORT'))})\"",
+                          f"\"DB_NAME=$(fetch_param {shlex.quote(param_name('DB_NAME'))})\"",
+                          f"\"DB_USER=$(fetch_param {shlex.quote(param_name('DB_USER'))})\"",
+                          f"\"DB_PASSWORD=$(fetch_param {shlex.quote(param_name('DB_PASSWORD'))})\"",
+                          f"\"SECRET_KEY=$(fetch_param {shlex.quote(param_name('SECRET_KEY'))})\"",
+                      ]
+                  )
+                  + f" | sudo tee {shlex.quote(env_file)} >/dev/null",
+                  f"sudo chown root:root {shlex.quote(env_file)}",
+                  f"sudo chmod 600 {shlex.quote(env_file)}",
+                  f"venv/bin/flask --app {shlex.quote(flask_app)} db upgrade",
+                  f"sudo systemctl restart {shlex.quote(service)}",
+                  "curl --fail --silent --show-error http://127.0.0.1:8000/ >/dev/null",
+                  "curl --fail --silent --show-error http://127.0.0.1/ >/dev/null",
+              ]
+          )
+
+          print(json.dumps({"commands": commands}))
+          PY
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file://commands.json \
+            --comment "GitHub Actions app deploy from Parameter Store" \
+            --query "Command.CommandId" \
+            --output text)
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "Status" \
+            --output text
+
+      - name: Deploy application over custom SSM commands
+        if: ${{ env.INSTANCE_ID != '' && secrets.ERP_DEPLOY_COMMANDS_B64 != '' && env.APP_DEPLOY_KEY_PARAMETER_NAME == '' }}
+        env:
+          ERP_DEPLOY_COMMANDS_B64: ${{ secrets.ERP_DEPLOY_COMMANDS_B64 }}
+        run: |
+          python - <<'PY' > commands.json
+          import base64
+          import json
+          import os
+
+          raw = base64.b64decode(os.environ["ERP_DEPLOY_COMMANDS_B64"]).decode("utf-8")
+          commands = [line for line in raw.splitlines() if line.strip()]
+          if not commands:
+              raise SystemExit("ERP_DEPLOY_COMMANDS_B64 decoded to an empty command list.")
+          print(json.dumps({"commands": commands}))
+          PY
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file://commands.json \
+            --comment "GitHub Actions ERP deploy" \
+            --query "Command.CommandId" \
+            --output text)
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query "Status" \
+            --output text

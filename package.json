@@ -1,0 +1,13 @@
+{
+  "name": "project-cdk-nexus",
+  "private": true,
+  "devDependencies": {
+    "aws-cdk": "^2.0.0"
+  },
+  "scripts": {
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy --all --require-approval never"
+  }
+}
