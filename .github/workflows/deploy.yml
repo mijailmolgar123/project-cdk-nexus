@@ -35,6 +35,7 @@ jobs:
       APP_CONFIG_PARAMETER_PREFIX: ${{ vars.APP_CONFIG_PARAMETER_PREFIX || '' }}
       APP_DEPLOY_KEY_PARAMETER_NAME: ${{ vars.APP_DEPLOY_KEY_PARAMETER_NAME || '' }}
       APP_SYSTEM_PACKAGES: ${{ vars.APP_SYSTEM_PACKAGES || 'git python3.11 python3.11-pip pango gdk-pixbuf2 cairo fontconfig libffi' }}
+      HAS_LEGACY_DEPLOY_COMMANDS: ${{ secrets.ERP_DEPLOY_COMMANDS_B64 != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -94,7 +95,7 @@ jobs:
         run: npx cdk deploy --all --require-approval never -c env_name=${CDK_ENV_NAME}
 
       - name: Resolve stack outputs
-        if: ${{ (env.APP_DEPLOY_KEY_PARAMETER_NAME != '' && env.APP_GIT_REPO_SSH_URL != '') || secrets.ERP_DEPLOY_COMMANDS_B64 != '' }}
+        if: ${{ (env.APP_DEPLOY_KEY_PARAMETER_NAME != '' && env.APP_GIT_REPO_SSH_URL != '') || env.HAS_LEGACY_DEPLOY_COMMANDS == 'true' }}
         run: |
           COMPUTE_STACK_NAME="${PROJECT_NAME}-${CDK_ENV_NAME}-compute"
           DATABASE_STACK_NAME="${PROJECT_NAME}-${CDK_ENV_NAME}-database"
@@ -293,7 +294,7 @@ jobs:
             --output text
 
       - name: Deploy application over custom SSM commands
-        if: ${{ env.INSTANCE_ID != '' && secrets.ERP_DEPLOY_COMMANDS_B64 != '' && env.APP_DEPLOY_KEY_PARAMETER_NAME == '' }}
+        if: ${{ env.INSTANCE_ID != '' && env.HAS_LEGACY_DEPLOY_COMMANDS == 'true' && env.APP_DEPLOY_KEY_PARAMETER_NAME == '' }}
         env:
           ERP_DEPLOY_COMMANDS_B64: ${{ secrets.ERP_DEPLOY_COMMANDS_B64 }}
         run: |
