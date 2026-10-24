@@ -1,0 +1,23 @@
+# Verified infrastructure environment on Python 3.11.17.
+attrs==25.4.0
+aws-cdk-lib==2.253.0
+aws-cdk.asset-awscli-v1==2.2.273
+aws-cdk.asset-node-proxy-agent-v6==2.1.1
+aws-cdk.cloud-assembly-schema==53.28.0
+cattrs==25.3.0
+certifi==2026.10.23
+constructs==10.6.0
+importlib_resources==7.1.0
+iniconfig==2.3.0
+jsii==1.142.0
+packaging==26.0
+pip==26.2.2
+pluggy==1.6.0
+publication==0.0.3
+Pygments==2.20.0
+pytest==9.0.3
+python-dateutil==2.9.0.post0
+setuptools==84.2.1
+six==1.17.0
+typeguard==2.13.3
+typing_extensions==4.15.0

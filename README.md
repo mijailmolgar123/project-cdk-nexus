@@ -197,3 +197,9 @@ make test
 ## Runbook
 
 Para el paso a paso operativo completo de migracion a una cuenta nueva, restore de RDS y fallback de upgrade, revisa [DEPLOY_NEW_ACCOUNT.md](/Users/mijailmolina/dev/segurimax/project-cdk-nexus/DEPLOY_NEW_ACCOUNT.md:1).
+
+# Versiones del entorno
+
+El intérprete local está fijado en `.python-version` (3.11.17). Instalar las herramientas con `requirements-tooling.txt`, además de los requisitos del proyecto. La política de la aplicación y el inventario verificado de local/EC2 se mantienen en el repositorio hermano `proyecto-cotizaciones`, en `runtime-versions.json` y `runtime-inventory.json`.
+
+El despliegue de aplicación invoca `deploy/prepare_runtime.sh` del checkout de la aplicación. En una EC2 nueva, preparar primero el Python aislado y Nginx con `deploy/install_python_runtime.sh` y `deploy/install_nginx_runtime.sh`, usando la política revisada de ese repositorio. El bootstrap base de CDK no constituye por sí solo un entorno de aplicación actualizado. No reemplazar el Python del sistema ni desplegar todas las pilas para actualizar el runtime.
