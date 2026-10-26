@@ -4,11 +4,13 @@ from typing import Iterable
 
 from aws_cdk import App, Environment, Tags
 
+from deployment_config import load_local_context
 from stacks.compute_stack import ComputeStack
 from stacks.database_stack import DatabaseStack
 from stacks.github_actions_stack import GitHubActionsStack
 from stacks.network_stack import NetworkStack
 from stacks.scheduler_stack import SchedulerStack
+from stacks.user_admin_stack import UserAdminStack
 
 
 def _ctx(app: App, env_cfg: dict, key: str, default=None):
@@ -48,6 +50,7 @@ def _string_list(value, default: Iterable[str]) -> list[str]:
 
 
 app = App()
+load_local_context(app)
 
 env_name = app.node.try_get_context("env_name") or "dev"
 envs = app.node.try_get_context("environments") or {}
@@ -66,6 +69,10 @@ app_directory = _ctx(app, env_cfg, "app_directory", "/home/ec2-user/app")
 app_service_name = _ctx(app, env_cfg, "app_service_name", "myapp")
 app_env_file_path = _ctx(app, env_cfg, "app_env_file_path", "/etc/myapp.env")
 app_port = int(_ctx(app, env_cfg, "app_port", 8000))
+active_db_host = _ctx(app, env_cfg, "active_db_host", None)
+active_db_identifier = _ctx(app, env_cfg, "active_db_instance_identifier", None)
+if bool(active_db_host) != bool(active_db_identifier):
+    raise ValueError("Set active_db_host and active_db_instance_identifier together.")
 app_system_packages = _string_list(
     _ctx(
         app,
@@ -130,6 +137,10 @@ database = DatabaseStack(
     db_backup_days=int(_ctx(app, env_cfg, "db_backup_days", 1)),
     db_engine_version=_ctx(app, env_cfg, "db_engine_version", "17.4"),
     app_config_parameter_prefix=app_config_parameter_prefix,
+    active_db_host=active_db_host,
+    active_db_instance_identifier=active_db_identifier,
+    retired_template_path=_ctx(app, env_cfg, "retired_database_template", None),
+    app_config_defaults=_ctx(app, env_cfg, "app_config_defaults", {}),
     db_publicly_accessible=_bool(
         _ctx(app, env_cfg, "db_publicly_accessible", False)
     ),
@@ -139,6 +150,23 @@ database = DatabaseStack(
     env=cdk_env,
     stack_name=f"{prefix}-database",
 )
+
+if _bool(_ctx(app, env_cfg, "enable_user_admin", False)):
+    UserAdminStack(
+        app,
+        f"{prefix}-user-admin",
+        env_name=env_name,
+        project=project,
+        vpc=network.vpc,
+        db_security_group=network.db_security_group,
+        db_name=_required_ctx(app, env_cfg, "db_name"),
+        db_username=_required_ctx(app, env_cfg, "db_username"),
+        app_config_parameter_prefix=app_config_parameter_prefix,
+        admin_schema=_ctx(app, env_cfg, "user_admin_schema", "admin"),
+        active_db_host=active_db_host,
+        env=cdk_env,
+        stack_name=f"{prefix}-user-admin",
+    )
 
 compute = ComputeStack(
     app,
@@ -176,6 +204,11 @@ SchedulerStack(
     business_start_hour=int(_ctx(app, env_cfg, "business_start_hour", 8)),
     business_stop_hour=int(_ctx(app, env_cfg, "business_stop_hour", 21)),
     scheduler_enabled=_bool(_ctx(app, env_cfg, "scheduler_enabled", True), True),
+    active_db_instance_identifier=active_db_identifier,
+    manage_rds=_bool(_ctx(app, env_cfg, "scheduler_manage_rds", True), True),
+    rds_start_hour=int(_ctx(app, env_cfg, "rds_start_hour", 7)),
+    rds_start_minute=int(_ctx(app, env_cfg, "rds_start_minute", 30)),
+    rds_stop_minute=int(_ctx(app, env_cfg, "rds_stop_minute", 5)),
     env=cdk_env,
     stack_name=f"{prefix}-scheduler",
 )

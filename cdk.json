@@ -1,12 +1,12 @@
 {
   "app": ".venv/bin/python app.py",
   "context": {
-    "project": "segurimax",
+    "project": "demoapp",
     "env_name": "dev",
     "github": {
-      "owner": "mijailmolgar123",
-      "repo": "proyecto-cotizaciones",
-      "branch": "ajustes_bd"
+      "owner": "your-github-org",
+      "repo": "your-infrastructure-repo",
+      "branch": "main"
     },
     "environments": {
       "dev": {
@@ -20,8 +20,8 @@
         "allow_https": false,
         "ssh_cidr": "",
         "ssh_key_name": "",
-        "app_deploy_key_parameter_name": "/proyecto-cotizaciones/dev/github/deploy-key",
-        "app_config_parameter_prefix": "/segurimax/dev/app-config",
+        "app_deploy_key_parameter_name": "/demoapp/dev/github/deploy-key",
+        "app_config_parameter_prefix": "/demoapp/dev/app-config",
         "app_directory": "/home/ec2-user/app",
         "app_service_name": "myapp",
         "app_flask_app": "app:create_app",
@@ -39,8 +39,8 @@
           "fontconfig",
           "libffi"
         ],
-        "db_name": "proyecto_cotizaciones",
-        "db_username": "postgres",
+        "db_name": "app_db",
+        "db_username": "app_admin",
         "db_instance_class": "t4g.micro",
         "db_engine_version": "17.4",
         "db_allocated_storage": 20,
@@ -51,7 +51,12 @@
         "schedule_timezone": "America/Lima",
         "business_start_hour": 8,
         "business_stop_hour": 21,
-        "scheduler_enabled": true
+        "scheduler_enabled": true,
+        "scheduler_manage_rds": true,
+        "rds_start_hour": 7,
+        "rds_start_minute": 30,
+        "rds_stop_minute": 5,
+        "enable_user_admin": false
       },
       "prod": {
         "region": "us-east-1",
@@ -64,8 +69,8 @@
         "allow_https": false,
         "ssh_cidr": "",
         "ssh_key_name": "",
-        "app_deploy_key_parameter_name": "/your-app/prod/github/deploy-key",
-        "app_config_parameter_prefix": "/segurimax/prod/app-config",
+        "app_deploy_key_parameter_name": "/demoapp/prod/github/deploy-key",
+        "app_config_parameter_prefix": "/demoapp/prod/app-config",
         "app_directory": "/home/ec2-user/app",
         "app_service_name": "myapp",
         "app_flask_app": "app:create_app",
@@ -83,8 +88,8 @@
           "fontconfig",
           "libffi"
         ],
-        "db_name": "proyecto_cotizaciones",
-        "db_username": "postgres",
+        "db_name": "app_db",
+        "db_username": "app_admin",
         "db_instance_class": "t4g.micro",
         "db_engine_version": "17.4",
         "db_allocated_storage": 20,
@@ -95,7 +100,12 @@
         "schedule_timezone": "America/Lima",
         "business_start_hour": 8,
         "business_stop_hour": 21,
-        "scheduler_enabled": true
+        "scheduler_enabled": true,
+        "enable_user_admin": false,
+        "scheduler_manage_rds": true,
+        "rds_start_hour": 7,
+        "rds_start_minute": 30,
+        "rds_stop_minute": 5
       }
     }
   }

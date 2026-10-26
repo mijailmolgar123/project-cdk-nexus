@@ -189,7 +189,6 @@ class ComputeStack(Stack):
                 },
             )
         )
-
         self.elastic_ip = None
         if associate_elastic_ip:
             self.elastic_ip = ec2.CfnEIP(

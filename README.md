@@ -1,199 +1,94 @@
 # CDK Nexus
 
-Infraestructura base para un ERP desplegado en AWS con AWS CDK v2 y Python.
-El repo crea la red, la EC2, la base PostgreSQL, el rol OIDC para GitHub Actions y el scheduler que prende y apaga EC2 y RDS en horario laboral.
+Infraestructura reutilizable para una aplicación Python/Flask en AWS, con AWS CDK v2 y Python. Incluye VPC sin NAT Gateway, EC2 Amazon Linux, PostgreSQL privado en RDS, credenciales generadas, configuración en Parameter Store, acceso por SSM y autenticación OIDC para GitHub Actions.
 
-## Arquitectura
+## Configuración pública y privada
 
-- `GitHubActionsStack`
-  - Proveedor OIDC de GitHub.
-  - Rol IAM para GitHub Actions sin access keys fijas.
-  - Permisos para asumir roles de bootstrap de CDK y disparar despliegues por SSM.
-
-- `NetworkStack`
-  - VPC sin NAT Gateway.
-  - Subred publica para EC2 y privada aislada para RDS.
-  - Security groups para HTTP/HTTPS y acceso de EC2 hacia PostgreSQL.
-
-- `DatabaseStack`
-  - RDS PostgreSQL con credenciales generadas en Secrets Manager.
-  - Replica `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `SECRET_KEY` y `USE_AWS_SECRET=false` a `SSM Parameter Store`.
-  - Proteccion de borrado configurable por ambiente.
-
-- `ComputeStack`
-  - EC2 Amazon Linux 2023.
-  - Bootstrap por `user_data` para `nginx`, `systemd`, `python3.11` y dependencias de `WeasyPrint`.
-  - `nginx` en `:80`, `gunicorn` en `127.0.0.1:8000` y `EnvironmentFile` en `/etc/myapp.env`.
-  - Acceso de solo lectura al prefijo de parámetros SSM de la app.
-  - `AmazonSSMManagedInstanceCore` para administrar y desplegar sin SSH.
-
-- `SchedulerStack`
-  - Lambda de operacion.
-  - Dos schedules de EventBridge Scheduler en `America/Lima`.
-  - Inicio `08:00` y apagado `21:00` para EC2 y RDS.
-
-## Lo que resuelve
-
-- Sin llaves AWS de larga duracion en GitHub.
-- Sin necesidad de abrir SSH para despliegues automatizados.
-- Horario operativo configurable por ambiente.
-- Configuracion sin datos personales en el repositorio.
-- Primer bootstrap de EC2 casi listo desde el stack, sin configurar `nginx` manualmente.
-
-## Requisitos
-
-- Python 3.10+
-- Python y Node instalados localmente, por ejemplo con Homebrew
-- Node.js 20+ para la CLI local de CDK
-- AWS CDK v2
-- Una cuenta AWS con permisos de bootstrap y despliegue inicial
-
-## Flujo local aislado
-
-Este repo esta preparado para un flujo por proyecto:
-
-- Usa la version de Python instalada en tu máquina, por ejemplo con `brew install python@3.11`.
-- `.venv` guarda dependencias Python locales al repo.
-- `node_modules/.bin/cdk` provee la CLI de CDK sin instalarla globalmente.
-
-Ejemplo de setup:
+`cdk.json` contiene valores de ejemplo. **No contiene la configuración de una cuenta real.** Copia `cdk.local.example.json` a `cdk.local.json` y completa tus datos. El archivo local se combina con los valores públicos antes de construir los stacks; los diccionarios se combinan recursivamente y las listas se sustituyen completas. `-c env_name=prod` conserva prioridad para elegir el entorno.
 
 ```bash
-brew install python@3.11 node@20
-python3.11 -m venv .venv
-source .venv/bin/activate
-make install
+cp cdk.local.example.json cdk.local.json
 ```
 
-Si Homebrew instala `node@20` fuera del `PATH` por defecto, exporta su binario antes de correr `make install`. El repo no depende de paquetes Python ni Node globales fuera de esas herramientas base.
+El identificador `111111111111` es ficticio: reemplázalo con tu cuenta. Configura `github.owner`, `github.repo` y `github.branch` con el repositorio **de infraestructura** que ejecutará GitHub Actions. El repositorio de la aplicación se configura por separado mediante `APP_GIT_REPO_SSH_URL`.
 
-## Contexto
+`cdk.local.json`, `.private/`, `.env*`, llaves y resultados operativos están ignorados. Conserva en `.private/` endpoints, plantillas obtenidas de AWS, inventarios y reportes de tu organización. Guarda contraseñas y tokens en Secrets Manager o Parameter Store SecureString. Un archivo ya publicado no desaparece del historial por agregarlo a `.gitignore`.
 
-La configuracion vive en `cdk.json`.
+Para seleccionar otro archivo privado usa `CDK_LOCAL_CONFIG=/ruta/al/archivo.json`. Para sintetizar únicamente la configuración pública usa `CDK_LOCAL_CONFIG=''`.
 
-- `github.owner`, `github.repo`, `github.branch`: repo autorizado a asumir el rol OIDC.
-- `environments.<env>.region`: región objetivo del ambiente.
-- `environments.<env>.schedule_timezone`: zona horaria del scheduler.
-- `environments.<env>.business_start_hour`: hora de encendido.
-- `environments.<env>.business_stop_hour`: hora de apagado.
-- `environments.<env>.app_deploy_key_parameter_name`: nombre del `SecureString` en Parameter Store que guarda la deploy key de GitHub.
-- `environments.<env>.app_config_parameter_prefix`: prefijo SSM donde la app leerá `DB_*`, `SECRET_KEY` y `USE_AWS_SECRET`.
-- `environments.<env>.app_directory`, `app_service_name`, `app_env_file_path`, `app_port`: contrato de runtime en EC2.
-- `ssh_cidr` y `ssh_key_name`: opcionales. El flujo recomendado usa SSM y no requiere SSH.
+## Preparación local
+
+Usa el Python indicado en `.python-version` y Node.js compatible con tu CDK CLI. Las bibliotecas Python están fijadas en `constraints.txt`; las herramientas están en `requirements-tooling.txt` y el lockfile de Node fija la CLI.
+
+```bash
+pyenv install -s "$(cat .python-version)"
+python -m venv .venv
+make install
+make test
+make synth ENV_NAME=dev
+```
+
+Las herramientas Python se ejecutan con `.venv/bin/python -m ...`. El Python del sistema puede tener una versión diferente.
+
+## Stacks
+
+- `GitHubActionsStack`: proveedor OIDC y rol para el repositorio y rama configurados.
+- `NetworkStack`: VPC, subredes públicas/aisladas y grupos de seguridad.
+- `DatabaseStack`: PostgreSQL, secreto generado y parámetros de aplicación. Conserva base y credenciales con `Retain`.
+- `ComputeStack`: EC2 administrada por SSM, Nginx, servicio systemd y acceso al prefijo SSM de la aplicación.
+- `SchedulerStack`: Lambda y horarios independientes para EC2/RDS, reintentos limitados, cola cifrada de fallos y alarmas CloudWatch.
+- `UserAdminStack`: opcional con `enable_user_admin=true`. Supone un esquema de usuarios compatible con el Lambda incluido; no es un módulo genérico de autenticación.
+- `DatabaseRecoveryStack`: entrada independiente `recovery_app.py` para recuperar a una instancia diferente.
+
+Para adoptar una base existente y retirar la original, `retired_database_template` selecciona una plantilla privada revisada que conserva los IDs de recursos compartidos. No se publica una plantilla correspondiente a una cuenta real. La prueba en `tests/fixtures/` usa datos sintéticos y no sirve para desplegar un entorno real.
+
+## Horarios
+
+Todos los días, por defecto en `America/Lima`:
+
+| Recurso | Inicio | Apagado |
+|---|---|---|
+| RDS | 07:30 | 21:05 |
+| EC2 | 08:00 | 21:00 |
+
+Son configurables con `business_start_hour`, `business_stop_hour`, `rds_start_hour`, `rds_start_minute`, `rds_stop_minute`, `scheduler_manage_rds` y `scheduler_enabled`. EC2 espera a que RDS esté disponible; el apagado de RDS espera a que EC2 esté detenido. Los eventos vencidos no cambian recursos. Las alarmas no incluyen destinatarios: configura tus notificaciones si las necesitas.
+
+Ver [horarios y backups](RDS_BUSINESS_HOURS.md) y [recuperación de RDS](RDS_RECOVERY.md).
 
 ## Primer despliegue
 
-El rol OIDC no existe hasta que lo creas por primera vez. Por eso el primer despliegue se hace con credenciales locales:
+Revisa tu configuración local y el diff antes de desplegar. Usa tu perfil AWS; la infraestructura base no instala por sí sola una versión actualizada de todas las dependencias de tu aplicación.
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-make install
-npx cdk bootstrap aws://<ACCOUNT_ID>/<REGION>
+export AWS_PROFILE=your-profile
+./node_modules/.bin/cdk bootstrap aws://YOUR_ACCOUNT_ID/us-east-1
+make diff ENV_NAME=dev
 make deploy ENV_NAME=dev
 ```
 
-Ese despliegue crea:
-
-- `segurimax-github-actions`
-- `segurimax-dev-network`
-- `segurimax-dev-database`
-- `segurimax-dev-compute`
-- `segurimax-dev-scheduler`
+El despliegue crea recursos facturables. Configura el runtime de tu aplicación de forma aislada; no sustituyas el Python del sistema operativo.
 
 ## GitHub Actions
 
-El workflow vive en `.github/workflows/deploy.yml`.
+Los pushes y pull requests ejecutan validaciones sin credenciales AWS. **Publicar código no despliega infraestructura.** El workflow `Deploy Infrastructure` se ejecuta manualmente con `workflow_dispatch`.
 
-Variables de GitHub recomendadas:
+Para habilitar el despliegue manual configura:
 
-- `AWS_ROLE_ARN`: output `GitHubActionsRoleArn` del stack `segurimax-github-actions`
-- `AWS_REGION`: region de despliegue
-- `CDK_ENV_NAME`: ambiente por defecto, por ejemplo `dev`
-- `PROJECT_NAME`: normalmente `segurimax`
-- `APP_GIT_REPO_SSH_URL`: repositorio Git por SSH, por ejemplo `git@github.com:tu-org/tu-repo.git`
-- `APP_GIT_BRANCH`: rama a desplegar, por ejemplo `ajustes_bd`
-- `APP_DIRECTORY`: ruta de la app en la EC2, por ejemplo `/home/ec2-user/app`
-- `APP_SERVICE_NAME`: servicio systemd a reiniciar, por ejemplo `myapp`
-- `APP_FLASK_APP`: valor para Flask CLI, por ejemplo `app:create_app`
-- `APP_ENV_FILE_PATH`: ruta del archivo de entorno que consumirá `systemd`, por ejemplo `/etc/myapp.env`
-- `APP_CONFIG_PARAMETER_PREFIX`: prefijo SSM con la configuración de la app
-- `APP_DEPLOY_KEY_PARAMETER_NAME`: nombre del `SecureString` con la deploy key
-- `APP_SYSTEM_PACKAGES`: paquetes RPM opcionales para instalar antes del deploy
+- Variable `AWS_ROLE_ARN`: rol OIDC de tu cuenta.
+- Variables `AWS_REGION`, `CDK_ENV_NAME` y las de tu aplicación según el workflow.
+- Secreto `CDK_LOCAL_CONFIG_JSON`: contenido de tu configuración privada con un objeto `context`.
+- Si usas una plantilla de retiro: secreto opcional `CDK_PRIVATE_TEMPLATES_JSON`, un objeto cuyas claves son nombres de archivos JSON y cuyos valores son las plantillas. El workflow las materializa solo en `.private/templates/`.
 
-## Despliegue barato con Parameter Store
+No publiques esos valores en archivos de ejemplo. El workflow exige la configuración privada antes de obtener credenciales AWS.
 
-Para gastar lo menos posible:
+Para desplegar la aplicación por SSM, esta debe proporcionar `deploy/prepare_runtime.sh` y `deploy/load_app_config.py` con el contrato usado en el workflow. Configura `APP_GIT_REPO_SSH_URL`, `APP_GIT_BRANCH`, `APP_HTTP_HOST` y un parámetro SecureString para la deploy key. El flujo instala el entorno fijado por la aplicación; las migraciones solo se ejecutan al seleccionar explícitamente `run_migrations`.
 
-- usa `SSM Parameter Store` para configuración y deploy key
-- deja `DB_PASSWORD`, `SECRET_KEY` y la deploy key como `SecureString`
-- mantente en `Standard` para evitar cargos del tier `Advanced`
-- usa la llave administrada por AWS `aws/ssm` y no una KMS propia
+Los valores opcionales `app_config_defaults` inicializan claves faltantes de configuración de la aplicación. No incluyen datos de empresa por defecto; proporciona los tuyos fuera del repositorio. Los tokens existentes se conservan durante cambios de endpoint.
 
-Los `Standard SecureString` tienen limite de 4 KB, suficiente para una deploy key normal. AWS documenta que los parametros avanzados generan cargos y que `SecureString` usa KMS para cifrado. Fuentes:
+Más detalles: [despliegue en otra cuenta](DEPLOY_NEW_ACCOUNT.md), [puesta en marcha de la aplicación](POST_DEPLOY_NEXT_STEPS.md).
 
-- https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-parameter-store.html
-- https://docs.aws.amazon.com/systems-manager/latest/userguide/secure-string-parameter-kms-encryption.html
+## Revisión antes de publicar
 
-Crear el parametro:
+`make test` comprueba la infraestructura y el comportamiento de los Lambdas con dobles locales, sin modificar AWS. El CI comprueba también que no entren configuraciones privadas, datos del operador ni credenciales en el contenido versionado.
 
-```bash
-aws ssm put-parameter \
-  --name "/your-app/dev/github/deploy-key" \
-  --type "SecureString" \
-  --tier "Standard" \
-  --value "$(cat deploy_key.pem)" \
-  --overwrite
-```
-
-Con esa configuracion no necesitas entrar manualmente a la EC2 para copiar la key. El workflow la recupera durante el deploy por SSM, directamente desde Parameter Store.
-
-La configuración de aplicación también sale de `SSM Parameter Store`. El stack publica:
-
-- `USE_AWS_SECRET=false`
-- `DB_HOST`
-- `DB_PORT`
-- `DB_NAME`
-- `DB_USER`
-- `DB_PASSWORD`
-- `SECRET_KEY`
-
-Durante cada deploy, GitHub Actions reconstruye `/etc/myapp.env` con esos parámetros antes de correr migraciones y reiniciar `myapp`.
-
-Secret opcional para despliegue de aplicacion por SSM:
-
-- `ERP_DEPLOY_COMMANDS_B64`: comandos shell codificados en base64, una linea por comando
-
-Ejemplo alineado con un despliegue tipo Flask en EC2:
-
-```bash
-cat <<'EOF' | base64
-cd /home/ec2-user/app
-source venv/bin/activate
-venv/bin/pip install -r requirements.txt
-venv/bin/flask --app app:create_app db upgrade
-sudo systemctl restart myapp
-EOF
-```
-
-Si defines `APP_DEPLOY_KEY_PARAMETER_NAME` y `APP_GIT_REPO_SSH_URL`, el workflow usa el flujo automatico por Parameter Store. Si no, todavia puedes usar `ERP_DEPLOY_COMMANDS_B64` como fallback manual.
-
-El workflow ya contempla el primer deploy: enciende EC2 y RDS si el scheduler las dejó apagadas, espera a que SSM esté `Online`, clona el repo si todavía no existe, crea `venv` si falta, instala `gunicorn`, corre `db upgrade`, reinicia `myapp` y valida tanto `gunicorn` como `nginx`.
-
-## Operacion diaria
-
-- EC2 y RDS arrancan a las `08:00` y se apagan a las `21:00`.
-- La evaluacion del horario se hace en `America/Lima`.
-- RDS puede detenerse de forma diaria sin problema; AWS solo fuerza arranque si pasan 7 dias continuos detenida.
-- Si un deploy cae fuera de horario, el workflow vuelve a encender EC2 y RDS antes de desplegar.
-
-## Validacion local
-
-```bash
-make synth ENV_NAME=dev
-make test
-```
-
-## Runbook
-
-Para el paso a paso operativo completo de migracion a una cuenta nueva, restore de RDS y fallback de upgrade, revisa [DEPLOY_NEW_ACCOUNT.md](/Users/mijailmolina/dev/segurimax/project-cdk-nexus/DEPLOY_NEW_ACCOUNT.md:1).
+La licencia del proyecto está en [LICENSE](LICENSE).

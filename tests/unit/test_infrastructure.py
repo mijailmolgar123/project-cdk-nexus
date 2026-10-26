@@ -12,17 +12,18 @@ from stacks.database_stack import DatabaseStack
 from stacks.github_actions_stack import GitHubActionsStack
 from stacks.network_stack import NetworkStack
 from stacks.scheduler_stack import SchedulerStack
+from stacks.user_admin_stack import UserAdminStack
 
 
-def _build_stacks():
+def _build_stacks(*, active_db_host=None, active_db_identifier=None, manage_rds=True, retired_template_path=None):
     app = cdk.App()
     env = cdk.Environment(account="111111111111", region="us-east-1")
-    app_config_parameter_prefix = "/segurimax/dev/app-config"
+    app_config_parameter_prefix = "/demoapp/dev/app-config"
 
     github = GitHubActionsStack(
         app,
         "GitHubActions",
-        project="segurimax",
+        project="demoapp",
         github_owner="example-org",
         github_repo="example-repo",
         github_branch="main",
@@ -32,7 +33,7 @@ def _build_stacks():
         app,
         "Network",
         env_name="dev",
-        project="segurimax",
+        project="demoapp",
         vpc_cidr="10.0.0.0/16",
         public_subnet_cidr_mask=24,
         private_subnet_cidr_mask=24,
@@ -43,10 +44,10 @@ def _build_stacks():
         app,
         "Database",
         env_name="dev",
-        project="segurimax",
+        project="demoapp",
         vpc=network.vpc,
         db_security_group=network.db_security_group,
-        db_name="proyecto_cotizaciones",
+        db_name="app_db",
         db_username="postgres",
         db_instance_class="t4g.micro",
         db_allocated_storage=20,
@@ -56,13 +57,19 @@ def _build_stacks():
         app_config_parameter_prefix=app_config_parameter_prefix,
         db_publicly_accessible=False,
         db_deletion_protection=False,
+        active_db_host=active_db_host,
+        active_db_instance_identifier=active_db_identifier,
+        retired_template_path=retired_template_path,
+        app_config_defaults={"FACTURACION_ENV": "sandbox", "FACTURACION_PROVIDER": "sunat",
+                             "FACTURACION_SANDBOX_TOKEN": "", "FACTURACION_PRODUCTION_TOKEN": "",
+                             "FACTURACION_LOOKUP_TOKEN": ""},
         env=env,
     )
     compute = ComputeStack(
         app,
         "Compute",
         env_name="dev",
-        project="segurimax",
+        project="demoapp",
         vpc=network.vpc,
         compute_security_group=network.compute_security_group,
         instance_type="t3.micro",
@@ -94,28 +101,45 @@ def _build_stacks():
         app,
         "Scheduler",
         env_name="dev",
-        project="segurimax",
+        project="demoapp",
         ec2_instance=compute.instance,
         database_instance=database.db_instance,
         schedule_timezone="America/Lima",
         business_start_hour=8,
         business_stop_hour=21,
         scheduler_enabled=True,
+        active_db_instance_identifier=active_db_identifier,
+        manage_rds=manage_rds,
+        env=env,
+    )
+    user_admin = UserAdminStack(
+        app,
+        "UserAdmin",
+        env_name="dev",
+        project="demoapp",
+        vpc=network.vpc,
+        db_security_group=network.db_security_group,
+        db_name="app_db",
+        db_username="postgres",
+        app_config_parameter_prefix=app_config_parameter_prefix,
+        admin_schema="admin",
+        bundle_dependencies=False,
+        active_db_host=active_db_host,
         env=env,
     )
 
-    return github, database, compute, scheduler
+    return github, database, compute, scheduler, user_admin
 
 
 def test_database_stack_creates_expected_app_config_parameters():
-    _, database, _, _ = _build_stacks()
+    _, database, _, _, _ = _build_stacks()
     template = assertions.Template.from_stack(database)
 
     template.resource_count_is("AWS::SSM::Parameter", 5)
     template.has_resource_properties(
         "AWS::SSM::Parameter",
         {
-            "Name": "/segurimax/dev/app-config/DB_HOST",
+            "Name": "/demoapp/dev/app-config/DB_HOST",
             "Tier": "Standard",
             "Type": "String",
         },
@@ -123,14 +147,40 @@ def test_database_stack_creates_expected_app_config_parameters():
     template.has_resource_properties(
         "AWS::CloudFormation::CustomResource",
         {
-            "DbPasswordParameterName": "/segurimax/dev/app-config/DB_PASSWORD",
-            "SecretKeyParameterName": "/segurimax/dev/app-config/SECRET_KEY",
+            "DbPasswordParameterName": "/demoapp/dev/app-config/DB_PASSWORD",
+            "SecretKeyParameterName": "/demoapp/dev/app-config/SECRET_KEY",
+            "DatabaseSecretKeyName": "secretKey",
+            "DatabaseSecretExtraValues": assertions.Match.object_like(
+                {
+                    "FACTURACION_ENV": "sandbox",
+                    "FACTURACION_PROVIDER": "sunat",
+                    "FACTURACION_SANDBOX_TOKEN": "",
+                    "FACTURACION_PRODUCTION_TOKEN": "",
+                    "FACTURACION_LOOKUP_TOKEN": "",
+                }
+            ),
+        },
+    )
+    template.has_resource_properties(
+        "AWS::IAM::Policy",
+        {
+            "PolicyDocument": {
+                "Statement": assertions.Match.array_with(
+                    [
+                        assertions.Match.object_like(
+                            {
+                                "Action": "secretsmanager:PutSecretValue",
+                                "Effect": "Allow",
+                            }
+                        )
+                    ]
+                )
+            }
         },
     )
 
-
 def test_compute_role_can_read_only_expected_parameter_paths():
-    _, _, compute, _ = _build_stacks()
+    _, _, compute, _, _ = _build_stacks()
     template = assertions.Template.from_stack(compute)
 
     template.has_resource_properties(
@@ -161,7 +211,7 @@ def test_compute_role_can_read_only_expected_parameter_paths():
 
 
 def test_compute_user_data_bootstraps_nginx_and_systemd():
-    _, _, compute, _ = _build_stacks()
+    _, _, compute, _, _ = _build_stacks()
     template = assertions.Template.from_stack(compute)
     resources = template.find_resources("AWS::EC2::Instance")
 
@@ -174,7 +224,7 @@ def test_compute_user_data_bootstraps_nginx_and_systemd():
 
 
 def test_compute_stack_associates_elastic_ip_when_enabled():
-    _, _, compute, _ = _build_stacks()
+    _, _, compute, _, _ = _build_stacks()
     template = assertions.Template.from_stack(compute)
 
     template.resource_count_is("AWS::EC2::EIP", 1)
@@ -182,20 +232,82 @@ def test_compute_stack_associates_elastic_ip_when_enabled():
 
 
 def test_scheduler_stack_creates_start_and_stop_schedules():
-    _, _, _, scheduler = _build_stacks()
+    _, _, _, scheduler, _ = _build_stacks()
     template = assertions.Template.from_stack(scheduler)
 
-    template.resource_count_is("AWS::Scheduler::Schedule", 2)
+    template.resource_count_is("AWS::Scheduler::Schedule", 4)
     template.has_resource_properties(
         "AWS::Scheduler::Schedule",
         {
             "ScheduleExpressionTimezone": "America/Lima",
         },
     )
+    template.has_resource_properties("AWS::Scheduler::Schedule", {
+        "ScheduleExpression": "cron(30 7 * * ? *)",
+        "Target": assertions.Match.object_like({
+            "RetryPolicy": {"MaximumEventAgeInSeconds": 300, "MaximumRetryAttempts": 2},
+        }),
+    })
+    template.has_resource_properties("AWS::Scheduler::Schedule", {
+        "ScheduleExpression": "cron(5 21 * * ? *)",
+    })
+
+
+def test_retired_database_is_never_recreated_and_shared_credentials_survive():
+    _, database, _, scheduler, _ = _build_stacks(
+        active_db_host="demoapp-dev-rds-recovery.example.invalid",
+        active_db_identifier="demoapp-dev-rds-recovery",
+        retired_template_path="tests/fixtures/database-retired.json",
+    )
+    template = assertions.Template.from_stack(database)
+    template.resource_count_is("AWS::RDS::DBInstance", 0)
+    template.resource_count_is("AWS::SecretsManager::Secret", 1)
+    template.resource_count_is("AWS::RDS::DBSubnetGroup", 1)
+    template.has_resource_properties("AWS::SSM::Parameter", {
+        "Name": "/demoapp/dev/app-config/DB_HOST",
+        "Value": "demoapp-dev-rds-recovery.example.invalid",
+    })
+    policy = str(assertions.Template.from_stack(scheduler).to_json())
+    assert "db:demoapp-dev-rds-recovery" in policy
+
+
+def test_user_admin_stack_creates_private_lambda_with_database_access():
+    _, _, _, _, user_admin = _build_stacks()
+    template = assertions.Template.from_stack(user_admin)
+
+    template.resource_count_is("AWS::Lambda::Function", 1)
+    template.resource_count_is("AWS::EC2::VPCEndpoint", 0)
+    template.has_resource_properties(
+        "AWS::Lambda::Function",
+        {
+            "FunctionName": "demoapp-dev-user-admin",
+            "Handler": "index.handler",
+            "Runtime": "python3.12",
+            "Environment": {
+                "Variables": assertions.Match.object_like(
+                    {
+                        "DB_NAME": "app_db",
+                        "DB_USER": "postgres",
+                        "DB_PASSWORD": assertions.Match.any_value(),
+                        "DB_ADMIN_SCHEMA": "admin",
+                    }
+                )
+            },
+        },
+    )
+    template.has_resource_properties(
+        "AWS::EC2::SecurityGroupIngress",
+        {
+            "IpProtocol": "tcp",
+            "FromPort": 5432,
+            "ToPort": 5432,
+            "Description": "User admin Lambda to RDS PostgreSQL",
+        },
+    )
 
 
 def test_github_role_is_limited_to_repo_and_branch_and_can_start_infra():
-    github, _, _, _ = _build_stacks()
+    github, _, _, _, _ = _build_stacks()
     template = assertions.Template.from_stack(github)
     policies = template.find_resources("AWS::IAM::Policy")
 
@@ -222,3 +334,52 @@ def test_github_role_is_limited_to_repo_and_branch_and_can_start_infra():
     )
     assert any("rds:StartDBInstance" in json.dumps(policy) for policy in policies.values())
     assert any("ec2:StartInstances" in json.dumps(policy) for policy in policies.values())
+
+
+def test_existing_database_and_credentials_are_retained_with_stable_logical_ids():
+    _, database, _, _, _ = _build_stacks()
+    template = assertions.Template.from_stack(database).to_json()
+    db = template["Resources"]["DatabaseB269D8BB"]
+    assert db["DeletionPolicy"] == db["UpdateReplacePolicy"] == "Retain"
+    assert db["Properties"]["DBInstanceIdentifier"] == "demoapp-dev-rds"
+    assert db["Properties"]["DBInstanceClass"] == "db.t4g.micro"
+    assert db["Properties"]["EngineVersion"] == "17.4"
+    secret = next(resource for resource in template["Resources"].values()
+                  if resource["Type"] == "AWS::SecretsManager::Secret")
+    assert secret["DeletionPolicy"] == secret["UpdateReplacePolicy"] == "Retain"
+
+
+def test_cutover_changes_connection_and_scheduler_without_changing_source_database():
+    _, original, _, _, _ = _build_stacks()
+    _, database, _, scheduler, user_admin = _build_stacks(
+        active_db_host="recovered.example.invalid",
+        active_db_identifier="demoapp-dev-rds-recovery",
+        manage_rds=False,
+    )
+    before = assertions.Template.from_stack(original).to_json()
+    after = assertions.Template.from_stack(database).to_json()
+    assert before["Resources"]["DatabaseB269D8BB"] == after["Resources"]["DatabaseB269D8BB"]
+    assert before["Outputs"]["ExportsOutputRefDatabaseB269D8BB88F4B1C4"] == after["Outputs"]["ExportsOutputRefDatabaseB269D8BB88F4B1C4"]
+    assertions.Template.from_stack(database).has_resource_properties(
+        "AWS::SSM::Parameter",
+        {"Name": "/demoapp/dev/app-config/DB_HOST_ACTIVE",
+         "Value": "recovered.example.invalid"},
+    )
+    assertions.Template.from_stack(database).has_resource_properties(
+        "AWS::CloudFormation::CustomResource",
+        {"DatabaseHost": assertions.Match.any_value(),
+         "FacturacionParameterName": "/demoapp/dev/app-config/FACTURACION_CONFIG"},
+    )
+    assertions.Template.from_stack(scheduler).has_resource_properties(
+        "AWS::Lambda::Function",
+        {"Environment": {"Variables": assertions.Match.object_like({
+            "RDS_INSTANCE_IDENTIFIER": "demoapp-dev-rds-recovery",
+            "MANAGE_RDS": "false",
+        })}},
+    )
+    assertions.Template.from_stack(user_admin).has_resource_properties(
+        "AWS::Lambda::Function",
+        {"Environment": {"Variables": assertions.Match.object_like({
+            "DB_HOST": "recovered.example.invalid",
+        })}},
+    )

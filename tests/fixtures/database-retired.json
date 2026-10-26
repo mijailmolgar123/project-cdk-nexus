@@ -1,0 +1,50 @@
+{
+  "Resources": {
+    "ExampleSecret": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": {
+        "GenerateSecretString": {
+          "SecretStringTemplate": "{\"username\":\"app_admin\"}",
+          "GenerateStringKey": "password"
+        }
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "ExampleSubnetGroup": {
+      "Type": "AWS::RDS::DBSubnetGroup",
+      "Properties": {
+        "DBSubnetGroupDescription": "Synthetic test subnet group",
+        "SubnetIds": [
+          {
+            "Fn::ImportValue": "example-private-subnet-a"
+          },
+          {
+            "Fn::ImportValue": "example-private-subnet-b"
+          }
+        ]
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "ExampleHost": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Name": "/demoapp/dev/app-config/DB_HOST",
+        "Type": "String",
+        "Value": "demoapp-dev-rds-recovery.example.invalid"
+      }
+    }
+  },
+  "Outputs": {
+    "ActiveDbInstanceIdentifier": {
+      "Value": "demoapp-dev-rds-recovery"
+    },
+    "ActiveDbEndpoint": {
+      "Value": "demoapp-dev-rds-recovery.example.invalid"
+    },
+    "AppConfigParameterPrefix": {
+      "Value": "/demoapp/dev/app-config"
+    }
+  }
+}

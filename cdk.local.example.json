@@ -1,0 +1,21 @@
+{
+  "context": {
+    "project": "myapp",
+    "github": {
+      "owner": "your-github-org",
+      "repo": "your-infrastructure-repo",
+      "branch": "main"
+    },
+    "environments": {
+      "dev": {
+        "account": "111111111111",
+        "region": "us-east-1",
+        "db_name": "app_db",
+        "db_username": "app_admin",
+        "app_config_parameter_prefix": "/myapp/dev/app-config",
+        "app_deploy_key_parameter_name": "/myapp/dev/github/deploy-key",
+        "scheduler_manage_rds": true
+      }
+    }
+  }
+}

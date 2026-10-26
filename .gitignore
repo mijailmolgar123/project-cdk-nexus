@@ -8,7 +8,6 @@ __pycache__
 .ruff_cache
 .coverage
 htmlcov
-.python-version
 .venv
 *.egg-info
 build
@@ -29,3 +28,21 @@ Thumbs.db
 .vscode
 Library/
 .venv-py39-backup/
+
+/.runtime/
+
+# Private deployment configuration and observations (never publish).
+/cdk.local.json
+/.private/
+/*_RESULT.json
+/*_VALIDATION.json
+/DEPLOY_PROGRESS_LOG.md
+/deploy/templates/*-retired.json
+*.pem
+*.key
+deploy_key
+deploy_key.pub
+credentials
+credentials.csv
+*.dump
+*.backup
